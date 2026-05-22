@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <!-- Premium dark metallic background gradient -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2c2d35"/>
+      <stop offset="1" stop-color="#18191e"/>
+    </linearGradient>
+    <!-- Vibrant, premium MiniMax brand gradient -->
+    <linearGradient id="brand-grad" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#00f2fe"/>  <!-- Cyan -->
+      <stop offset="0.5" stop-color="#7f00ff"/> <!-- Purple -->
+      <stop offset="1" stop-color="#ff007f"/>   <!-- Pink/Magenta -->
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  <!-- Background Card -->
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <!-- Elegant glowing outer border using the gradient -->
+  <rect x="2" y="2" width="124" height="124" rx="26" fill="none" stroke="url(#brand-grad)" stroke-width="2.5" opacity="0.85"/>
+  <!-- Subtly shaded background glow -->
+  <circle cx="64" cy="64" r="36" fill="url(#brand-grad)" opacity="0.12" filter="url(#glow)"/>
+  <!-- Sleek stylized 'M' logo in the center representing MiniMax -->
+  <path d="M 36 84 
+           L 36 44 
+           A 4 4 0 0 1 42 40 
+           L 58 64 
+           L 70 64 
+           L 86 40 
+           A 4 4 0 0 1 92 44 
+           L 92 84 
+           A 4 4 0 0 1 88 88 
+           L 82 88 
+           A 4 4 0 0 1 78 84 
+           L 78 58 
+           L 68 76 
+           A 4 4 0 0 1 60 76 
+           L 50 58 
+           L 50 84 
+           A 4 4 0 0 1 46 88 
+           L 40 88 
+           A 4 4 0 0 1 36 84 Z" 
+        fill="url(#brand-grad)"/>
+</svg>
