@@ -6,6 +6,7 @@ gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import AyatanaAppIndicator3 as AppIndicator, Gio, GLib, Gtk
 
 import threading
+import queue
 import os
 
 from .api import APIClient, APIAuthError, APIError
@@ -26,6 +27,9 @@ class MiniMaxApp(Gtk.Application):
         self._indicator = None
         self._win = None
         self._timer_id = None
+        self._fetch_thread = None
+        self._fetch_queue = queue.Queue()
+        self._fetch_shutdown = False
 
     def do_activate(self):
         self.hold()
@@ -47,6 +51,7 @@ class MiniMaxApp(Gtk.Application):
 
         if self._config.get("api_key"):
             self._client = APIClient(self._config["api_key"])
+            self._start_fetch_worker()
             self._refresh()
             self._schedule_refresh()
         else:
@@ -127,27 +132,47 @@ class MiniMaxApp(Gtk.Application):
 
     def _update_menu(self, d):
         M = self._mi
-        M["header"].set_label(f"MiniMax Token Plan ({d['model_name']})")
-        
-        M["int_details"].set_label(
-            f"  Used: {fmt_count(d['interval_used'])} / "
-            f"{fmt_count(d['interval_total'])} requests ({d['interval_pct']}%)"
-        )
+        # model_name is a quota bucket ("general", "video"), not a plan name.
+        M["header"].set_label(f"MiniMax {d['plan_label']}")
+
+        # Interval
+        if d["interval_total"] > 0:
+            int_label = (
+                f"  Used: {fmt_count(d['interval_used'])} / "
+                f"{fmt_count(d['interval_total'])} requests ({d['interval_pct']}%)"
+            )
+        elif d["interval_pct"] is not None:
+            int_label = f"  Used: {d['interval_pct']}% of 5h window"
+        else:
+            int_label = "  Used: --"
+        M["int_details"].set_label(int_label)
         M["int_reset"].set_label(f"  \u21bb Resets in: {fmt_reset(d['interval_reset_ms'])}")
 
+        # Weekly
         if d["weekly_total"] > 0:
-            M["wk_details"].set_label(
+            wk_label = (
                 f"  Used: {fmt_count(d['weekly_used'])} / "
                 f"{fmt_count(d['weekly_total'])} requests/tokens ({d['weekly_pct']}%)"
             )
             M["wk_reset"].set_label(f"  \u21bb Resets in: {fmt_reset(d['weekly_reset_ms'])}")
             M["wk_details"].show()
             M["wk_reset"].show()
-        else:
-            M["wk_details"].set_label("  Used: Unlimited Weekly")
+        elif d.get("weekly_rem_pct") is not None:
+            wk_label = f"  Used: {d['weekly_pct']}%"
+            M["wk_reset"].set_label(f"  \u21bb Resets in: {fmt_reset(d['weekly_reset_ms'])}")
+            M["wk_details"].show()
+            M["wk_reset"].show()
+        elif d.get("weekly_tracked"):
+            wk_label = "  Used: --"
+            M["wk_details"].show()
             M["wk_reset"].hide()
+        else:
+            wk_label = "  Weekly limit not enabled on this plan"
+            M["wk_details"].show()
+            M["wk_reset"].hide()
+        M["wk_details"].set_label(wk_label)
 
-        M["model_name"].set_label(f"Plan Model: {d['model_name']}")
+        M["model_name"].set_label(f"Plan: {d['plan_label']}")
         M["status"].set_label(f"Updated {d['ts'].strftime('%H:%M:%S')}")
 
     def _set_status(self, msg):
@@ -159,20 +184,33 @@ class MiniMaxApp(Gtk.Application):
         if not self._client:
             return
         self._set_status("Refreshing\u2026")
-        threading.Thread(target=self._fetch_thread, daemon=True).start()
+        self._fetch_queue.put("refresh")
 
-    def _fetch_thread(self):
-        try:
-            data = self._client.fetch_all()
-            GLib.idle_add(self._on_data, data)
-        except APIAuthError as e:
-            GLib.idle_add(self._on_error, str(e))
-        except APIError as e:
-            GLib.idle_add(self._on_error, str(e))
+    def _start_fetch_worker(self):
+        def worker():
+            while not self._fetch_shutdown:
+                try:
+                    self._fetch_queue.get(timeout=1)
+                    if self._fetch_shutdown:
+                        break
+                    try:
+                        data = self._client.fetch_all()
+                        GLib.idle_add(self._on_data, data)
+                    except APIAuthError as e:
+                        GLib.idle_add(self._on_error, str(e))
+                    except APIError as e:
+                        GLib.idle_add(self._on_error, str(e))
+                    self._fetch_queue.task_done()
+                except queue.Empty:
+                    continue
+
+        self._fetch_thread = threading.Thread(target=worker, daemon=True)
+        self._fetch_thread.start()
 
     def _on_data(self, data):
         self._data = data
-        self._indicator.set_label(f"MM {data['interval_pct']}%", "")
+        pct = data.get("interval_pct")
+        self._indicator.set_label(f"MM {pct}%" if pct is not None else "MM --", "")
         self._update_menu(data)
         if self._win:
             self._win.update_data(data)
@@ -227,6 +265,8 @@ class MiniMaxApp(Gtk.Application):
     def _on_quit(self, _):
         if self._timer_id:
             GLib.source_remove(self._timer_id)
+        self._fetch_shutdown = True
+        self._fetch_queue.put("shutdown")
         self.quit()
 
 

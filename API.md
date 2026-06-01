@@ -8,9 +8,11 @@ API used by this indicator to fetch quota/usage data.
 
 ---
 
-## `GET /v1/token_plan/remains`
+## `GET /v1/api/openplatform/coding_plan/remains`
 
-Returns quota usage and reset information for all models and categories under the authenticated token plan.
+> This is the canonical path used by the official `MiniMax-AI/cli` and is what this indicator calls. The legacy `GET /v1/token_plan/remains` route returns an identical payload.
+
+Returns quota usage and reset information for all quota buckets under the authenticated token plan.
 
 ### Request
 
@@ -46,21 +48,25 @@ No query parameters required.
 
 ### `model_remains[]` Object
 
-Each entry represents one model's quota state.
+Each entry represents one quota bucket. Buckets are not request-time model IDs (those are things like `MiniMax-M2.7` or `coding-plan-vlm`); they are aggregated quota categories. The two known values are `general` (combined text/speech/image/music quota) and `video` (separate video quota).
 
 | Field | Type | Unit | Description |
 |-------|------|------|-------------|
-| `model_name` | string | — | Model identifier (e.g. `"MiniMax-M*"`, `"coding-plan-vlm"`) |
+| `model_name` | string | — | Quota bucket: `"general"` or `"video"`. Not a plan or model identifier. |
 | `start_time` | integer | epoch ms | Start of the current interval window |
 | `end_time` | integer | epoch ms | End of the current interval window |
 | `remains_time` | integer | **milliseconds** | Duration until interval reset (relative to "now") |
-| `current_interval_total_count` | integer | requests | Total allowed requests in the current interval |
-| `current_interval_usage_count` | integer | requests | Requests used in the current interval |
+| `current_interval_total_count` | integer | requests | Total allowed requests in the current interval. Often `0` when the server does not expose raw counts — see `current_interval_remaining_percent` as the reliable signal in that case. |
+| `current_interval_usage_count` | integer | requests | Requests used in the current interval. Often `0` when the server does not expose raw counts. |
+| `current_interval_remaining_percent` | integer | 0–100 | Server-computed remaining percent for the interval window. Preferred display value. |
+| `current_interval_status` | integer | enum | Whether the bucket is enabled on the current subscription. Observed values: `1` = enabled, `3` = not enabled on this plan. Enum is not officially documented. |
 | `weekly_start_time` | integer | epoch ms | Start of the current weekly cycle |
 | `weekly_end_time` | integer | epoch ms | End of the current weekly cycle |
 | `weekly_remains_time` | integer | **milliseconds** | Duration until weekly reset (relative to "now") |
-| `current_weekly_total_count` | integer | requests/tokens | Total weekly allowance (0 = unlimited) |
-| `current_weekly_usage_count` | integer | requests/tokens | Weekly usage so far |
+| `current_weekly_total_count` | integer | requests | Total weekly allowance. `0` does **not** mean "unlimited" — it means the count is not exposed; use the percent field instead. Weekly tracking is being rolled out and may be absent on some plans. |
+| `current_weekly_usage_count` | integer | requests | Weekly usage so far. Often `0` when the server does not expose raw counts. |
+| `current_weekly_remaining_percent` | integer | 0–100 | Server-computed remaining percent for the weekly window. May be absent while the weekly feature is being enabled. |
+| `current_weekly_status` | integer | enum | Same shape as `current_interval_status`. |
 
 ### `category_remains[]` Object
 
@@ -70,6 +76,8 @@ Same fields as `model_remains[]`, plus:
 |-------|------|-------------|
 | `category` | string | Category key (e.g. `"text_generation"`, `"video_generation"`) |
 | `display_name` | string | Human-readable category name (e.g. `"Text Generation"`) |
+
+> `category_remains` is documented here but has not been observed in live responses for Token Plan subscribers; it may apply to other subscription tiers.
 
 ### `base_resp` Error Codes
 
@@ -97,11 +105,11 @@ The interval window is typically a 5-hour rolling window. The `start_time` and `
 
 ### Weekly quotas
 
-When `current_weekly_total_count` is `0`, the model has no weekly limit (unlimited weekly usage).
+Weekly data is exposed on the same endpoint via the `*_weekly_*` fields. There is no separate weekly endpoint. When `current_weekly_total_count == 0` and `current_weekly_remaining_percent` is also absent, weekly tracking is not enabled for the current subscription. The legacy interpretation "`total == 0` means unlimited" no longer holds — the percent field is the source of truth when present.
 
 ### Model selection
 
-The app selects a primary model by preferring `MiniMax-M*` or any model with `coding-plan` in its name. If none found, it falls back to the first model with a non-zero interval limit.
+The app selects a primary bucket by preferring the `"general"` bucket when `current_interval_status == 1`, then any bucket with `status == 1`, then the first bucket in the list. The old `MiniMax-M*` / `coding-plan` name match is obsolete — those are request-time model IDs, not values returned by `/remains`.
 
 ### Example `remains_time` calculation
 
@@ -112,3 +120,9 @@ remains_time = 11293258 (ms)
 
 reset_at = now_epoch_ms + remains_time
 ```
+
+### Reading the percent fields
+
+The `*_remaining_percent` fields are server-computed and should be preferred over deriving percent from `usage_count / total_count` whenever they are present. On plans where the server does not expose raw counts (so `total_count == 0` and `usage_count == 0`), the percent field is the only signal.
+
+To display "used percent" (the value shown in the panel label), compute `100 - *_remaining_percent`. To display "remaining percent" (used in progress bars as a fraction remaining), use the field directly.

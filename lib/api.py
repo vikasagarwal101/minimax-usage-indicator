@@ -6,6 +6,12 @@ import urllib.request
 from datetime import datetime
 
 API_BASE = "https://api.minimax.io"
+# Canonical path used by the official MiniMax-AI/cli; same payload as the
+# legacy /v1/token_plan/remains route.
+REMAINS_ENDPOINT = "/v1/api/openplatform/coding_plan/remains"
+# The API does not expose a plan-name field. model_name in the response is the
+# quota bucket (e.g. "general", "video"), not the subscription plan.
+PLAN_LABEL = "Token Plan"
 
 
 class APIError(Exception):
@@ -52,113 +58,132 @@ class APIClient:
         except json.JSONDecodeError as e:
             raise APIError("Invalid response from API") from e
 
-    def fetch_all(self):
-        try:
-            r = self._req("/v1/token_plan/remains")
-        except APIAuthError:
-            raise
-        except APIError:
-            raise
+    @staticmethod
+    def _rem_pct_from_model(m, kind):
+        """Remaining percent for 'interval' or 'weekly'. Prefers the server-side
+        `*_remaining_percent` field; falls back to count math; returns None if
+        neither is available."""
+        pct_key = f"current_{kind}_remaining_percent"
+        if m.get(pct_key) is not None:
+            return int(m[pct_key])
+        total = m.get(f"current_{kind}_total_count", 0)
+        used = m.get(f"current_{kind}_usage_count", 0)
+        if total > 0:
+            return int(max(0, total - used) / total * 100)
+        return None
 
+    @staticmethod
+    def _is_enabled(m):
+        """Best-effort: model is enabled on this plan if `*_status == 1`. If the
+        status field is absent (older API), assume enabled so the app still
+        renders something useful."""
+        for key in ("current_interval_status", "current_weekly_status"):
+            v = m.get(key)
+            if v is not None:
+                return v == 1
+        return True
+
+    @staticmethod
+    def _epoch_ms_to_dt(val):
+        return datetime.fromtimestamp(val / 1000) if val else None
+
+    def _normalize(self, m):
+        i_rem = self._rem_pct_from_model(m, "interval")
+        w_rem = self._rem_pct_from_model(m, "weekly")
+        interval_total = m.get("current_interval_total_count", 0)
+        weekly_total = m.get("current_weekly_total_count", 0)
+        interval_used = m.get("current_interval_usage_count", 0)
+        weekly_used = m.get("current_weekly_usage_count", 0)
+
+        return {
+            "name": m.get("model_name", ""),
+            "enabled": self._is_enabled(m),
+            "interval_status": m.get("current_interval_status"),
+            "weekly_status": m.get("current_weekly_status"),
+            # Percent fields (None when the API doesn't expose them)
+            "interval_rem_pct": i_rem,
+            "weekly_rem_pct": w_rem,
+            "interval_pct": (100 - i_rem) if i_rem is not None else None,
+            "weekly_pct": (100 - w_rem) if w_rem is not None else None,
+            # Raw counts (0 when not exposed; treat total=0 as "count unknown")
+            "interval_used": interval_used,
+            "interval_total": interval_total,
+            "interval_remains": (max(0, interval_total - interval_used)
+                                 if interval_total > 0 else None),
+            "weekly_used": weekly_used,
+            "weekly_total": weekly_total,
+            "weekly_remains": (max(0, weekly_total - weekly_used)
+                               if weekly_total > 0 else None),
+            "weekly_tracked": weekly_total > 0 or w_rem is not None,
+            # Reset times in epoch ms (None when missing)
+            "interval_reset_ms": (
+                int(time.time() * 1000 + m["remains_time"])
+                if m.get("remains_time") else None
+            ),
+            "weekly_reset_ms": (
+                int(time.time() * 1000 + m["weekly_remains_time"])
+                if m.get("weekly_remains_time") else None
+            ),
+            # Window boundaries
+            "interval_start": self._epoch_ms_to_dt(m.get("start_time")),
+            "interval_end": self._epoch_ms_to_dt(m.get("end_time")),
+            "weekly_start": self._epoch_ms_to_dt(m.get("weekly_start_time")),
+            "weekly_end": self._epoch_ms_to_dt(m.get("weekly_end_time")),
+        }
+
+    def fetch_all(self):
+        r = self._req(REMAINS_ENDPOINT)
         models_list = r.get("model_remains", [])
         if not models_list:
             raise APIError("No model remains data found in API response")
 
-        # Select primary model: prefer MiniMax-M* or coding-plan, fallback to first with interval limit
+        # Primary model: prefer enabled "general" bucket, then any enabled
+        # model, then the first one. The old "MiniMax-M*" / "coding-plan"
+        # name match is obsolete — those are request-time model IDs, not
+        # values returned by /remains.
         primary = None
         for m in models_list:
-            name = m.get("model_name", "")
-            if name.startswith("MiniMax-M") or "coding-plan" in name:
+            if self._is_enabled(m) and m.get("model_name") == "general":
                 primary = m
                 break
-        if not primary:
+        if primary is None:
             for m in models_list:
-                if m.get("current_interval_total_count", 0) > 0:
+                if self._is_enabled(m):
                     primary = m
                     break
-        if not primary:
+        if primary is None:
             primary = models_list[0]
 
-        # Extract primary metrics
-        model_name = primary.get("model_name", "MiniMax-M*")
-        
-        # Interval
-        interval_used = primary.get("current_interval_usage_count", 0)
-        interval_total = primary.get("current_interval_total_count", 0)
-        interval_remains = max(0, interval_total - interval_used)
-        interval_rem_pct = int((interval_remains / interval_total) * 100) if interval_total > 0 else 100
-        
-        # remains_time is returned in milliseconds
-        remains_time = primary.get("remains_time", 0)
-        interval_reset_ms = int(time.time() * 1000 + remains_time) if remains_time else None
+        primary_data = self._normalize(primary)
 
-        # Weekly
-        weekly_used = primary.get("current_weekly_usage_count", 0)
-        weekly_total = primary.get("current_weekly_total_count", 0)
-        weekly_remains = max(0, weekly_total - weekly_used)
-        weekly_rem_pct = int((weekly_remains / weekly_total) * 100) if weekly_total > 0 else 100
-        
-        weekly_remains_time = primary.get("weekly_remains_time", 0)
-        weekly_reset_ms = int(time.time() * 1000 + weekly_remains_time) if weekly_remains_time else None
-
-        # Parse epochs (which are in milliseconds from MiniMax API)
-        def parse_epoch(val):
-            return datetime.fromtimestamp(val / 1000) if val else None
-
-        interval_start = parse_epoch(primary.get("start_time"))
-        interval_end = parse_epoch(primary.get("end_time"))
-        weekly_start = parse_epoch(primary.get("weekly_start_time"))
-        weekly_end = parse_epoch(primary.get("weekly_end_time"))
-
-        # Build list of all active models to show in expanded panel
-        all_models = []
-        for m in models_list:
-            m_total = m.get("current_interval_total_count", 0)
-            m_wk_total = m.get("current_weekly_total_count", 0)
-            # Only include models that have actual limits configured
-            if m_total > 0 or m_wk_total > 0:
-                m_used = m.get("current_interval_usage_count", 0)
-                m_rem = max(0, m_total - m_used)
-                m_rem_pct = int((m_rem / m_total) * 100) if m_total > 0 else 100
-                m_used_pct = 100 - m_rem_pct
-                
-                m_wk_used = m.get("current_weekly_usage_count", 0)
-                m_wk_rem = max(0, m_wk_total - m_wk_used)
-                m_wk_rem_pct = int((m_wk_rem / m_wk_total) * 100) if m_wk_total > 0 else 100
-                m_wk_used_pct = 100 - m_wk_rem_pct
-                
-                all_models.append({
-                    "name": m.get("model_name", ""),
-                    "interval_remains": m_rem,
-                    "interval_total": m_total,
-                    "interval_rem_pct": m_rem_pct,
-                    "interval_used_pct": m_used_pct,
-                    "weekly_remains": m_wk_rem,
-                    "weekly_total": m_wk_total,
-                    "weekly_rem_pct": m_wk_rem_pct,
-                    "weekly_used_pct": m_wk_used_pct,
-                })
+        # Detail window: every bucket that exposes any percent field.
+        all_models = [
+            self._normalize(m)
+            for m in models_list
+            if self._rem_pct_from_model(m, "interval") is not None
+            or self._rem_pct_from_model(m, "weekly") is not None
+        ]
 
         return {
-            "model_name": model_name,
-            "interval_remains": interval_remains,
-            "interval_total": interval_total,
-            "interval_used": interval_used,
-            "interval_pct": 100 - interval_rem_pct,  # Usage percentage
-            "interval_rem_pct": interval_rem_pct,     # Remaining percentage
-            "interval_reset_ms": interval_reset_ms,
-            "interval_start": interval_start,
-            "interval_end": interval_end,
-            "weekly_remains": weekly_remains,
-            "weekly_total": weekly_total,
-            "weekly_used": weekly_used,
-            "weekly_pct": 100 - weekly_rem_pct,       # Usage percentage
-            "weekly_rem_pct": weekly_rem_pct,         # Remaining percentage
-            "weekly_reset_ms": weekly_reset_ms,
-            "weekly_start": weekly_start,
-            "weekly_end": weekly_end,
+            "plan_label": PLAN_LABEL,
+            "model_name": primary_data["name"],
+            "interval_pct": primary_data["interval_pct"],
+            "interval_rem_pct": primary_data["interval_rem_pct"],
+            "weekly_pct": primary_data["weekly_pct"],
+            "weekly_rem_pct": primary_data["weekly_rem_pct"],
+            "interval_used": primary_data["interval_used"],
+            "interval_total": primary_data["interval_total"],
+            "interval_remains": primary_data["interval_remains"],
+            "weekly_used": primary_data["weekly_used"],
+            "weekly_total": primary_data["weekly_total"],
+            "weekly_remains": primary_data["weekly_remains"],
+            "weekly_tracked": primary_data["weekly_tracked"],
+            "interval_reset_ms": primary_data["interval_reset_ms"],
+            "weekly_reset_ms": primary_data["weekly_reset_ms"],
+            "interval_start": primary_data["interval_start"],
+            "interval_end": primary_data["interval_end"],
+            "weekly_start": primary_data["weekly_start"],
+            "weekly_end": primary_data["weekly_end"],
             "all_models": all_models,
             "ts": datetime.now(),
         }
-
-
