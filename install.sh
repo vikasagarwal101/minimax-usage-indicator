@@ -59,9 +59,7 @@ echo "[3/4] Installing application icon..."
 
 mkdir -p "$ICON_DIR"
 cp "$SCRIPT_DIR/minimax-usage-indicator.svg" "$ICON_DIR/${APP_ID}.svg"
-cp "$SCRIPT_DIR/blank-icon.svg" "$ICON_DIR/minimax-blank-icon.svg"
-# Symlink blank-icon.svg in the install dir or copy it
-cp "$SCRIPT_DIR/blank-icon.svg" "$INSTALL_DIR/blank-icon.svg"
+cp "$SCRIPT_DIR/panel-icon.svg" "$INSTALL_DIR/panel-icon.svg"
 cp "$SCRIPT_DIR/minimax-usage-indicator.svg" "$INSTALL_DIR/minimax-usage-indicator.svg"
 gtk-update-icon-cache -f "${HOME}/.local/share/icons/hicolor/" 2>/dev/null || true
 

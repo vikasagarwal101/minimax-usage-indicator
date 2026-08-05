@@ -46,7 +46,9 @@ class APIClient:
                     status_msg = resp.get("status_msg", "")
                     if status_code != 0:
                         if status_code in (1004, 1011, 1024):
-                            raise APIAuthError(f"Auth error ({status_code}): {status_msg}")
+                            raise APIAuthError(
+                                f"Auth error ({status_code}): {status_msg}"
+                            )
                         raise APIError(f"MiniMax Error {status_code}: {status_msg}")
                 return body
         except urllib.error.HTTPError as e:
@@ -55,6 +57,8 @@ class APIClient:
             raise APIError(f"API returned HTTP {e.code}") from e
         except urllib.error.URLError as e:
             raise APIError(f"Network error: {e.reason}") from e
+        except TimeoutError as e:
+            raise APIError("Network timeout contacting MiniMax API") from e
         except json.JSONDecodeError as e:
             raise APIError("Invalid response from API") from e
 
@@ -108,21 +112,25 @@ class APIClient:
             # Raw counts (0 when not exposed; treat total=0 as "count unknown")
             "interval_used": interval_used,
             "interval_total": interval_total,
-            "interval_remains": (max(0, interval_total - interval_used)
-                                 if interval_total > 0 else None),
+            "interval_remains": (
+                max(0, interval_total - interval_used) if interval_total > 0 else None
+            ),
             "weekly_used": weekly_used,
             "weekly_total": weekly_total,
-            "weekly_remains": (max(0, weekly_total - weekly_used)
-                               if weekly_total > 0 else None),
+            "weekly_remains": (
+                max(0, weekly_total - weekly_used) if weekly_total > 0 else None
+            ),
             "weekly_tracked": weekly_total > 0 or w_rem is not None,
             # Reset times in epoch ms (None when missing)
             "interval_reset_ms": (
                 int(time.time() * 1000 + m["remains_time"])
-                if m.get("remains_time") else None
+                if m.get("remains_time")
+                else None
             ),
             "weekly_reset_ms": (
                 int(time.time() * 1000 + m["weekly_remains_time"])
-                if m.get("weekly_remains_time") else None
+                if m.get("weekly_remains_time")
+                else None
             ),
             # Window boundaries
             "interval_start": self._epoch_ms_to_dt(m.get("start_time")),

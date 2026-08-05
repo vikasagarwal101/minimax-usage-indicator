@@ -2,7 +2,7 @@
 
 A GNOME panel indicator for monitoring your [MiniMax Token Plan](https://api.minimax.io) quota usage.
 
-Shows up in your top bar as a panel indicator with a remaining quota percentage label. Click it for a detailed dropdown menu, or open the full detail window.
+Shows up in your top bar as a panel indicator with a used quota percentage label. Click it for a detailed dropdown menu, or open the full detail window.
 
 ## Menu Preview
 
@@ -23,7 +23,7 @@ Shows up in your top bar as a panel indicator with a remaining quota percentage 
                 │─────────────────────────────────│
                 │ Open Details Window             │
                 │ Refresh Now                     │
-                │ Settings…                       │
+                │ Settings...                     │
                 │─────────────────────────────────│
                 │ Updated 14:32:05                │
                 │ Quit                            │
@@ -37,6 +37,9 @@ Shows up in your top bar as a panel indicator with a remaining quota percentage 
 - **Weekly quota** — tracks remaining weekly requests/tokens and weekly reset.
 - **Plan model metadata** — displays your active subscription plan models.
 - **Detail window** — full GTK window with beautiful progress bars showing remaining quotas.
+- **Open MiniMax Console** — opens Token Plan at `https://platform.minimax.io/subscribe/token-plan`.
+- **Threshold marker** — top-bar label adds `*` at 80%+ and `!` at 90%+ interval usage.
+- **Desktop notifications** — one-shot alerts for warning/critical thresholds and new refresh errors.
 - **Auto-refresh** — configurable interval (default 5 min).
 - **Autostart** — can launch on login.
 
@@ -63,7 +66,7 @@ This will:
 
 ## Configure
 
-On first launch, click the indicator → **Settings…** and paste your MiniMax Token Plan API key (should start with `sk-cp-`).
+On first launch, click the indicator → **Settings...** and paste your MiniMax Token Plan API key (should start with `sk-cp-`).
 
 Or create the config file manually:
 
@@ -86,15 +89,36 @@ cp config.example.json ~/.config/minimax-usage-widget/config.json
 python3 minimax-usage-indicator.py
 ```
 
+## Diagnostics
+
+Run a non-secret auth check without launching GTK:
+
+```bash
+python3 minimax-usage-indicator.py --check-auth
+```
+
+For machine-readable output:
+
+```bash
+python3 minimax-usage-indicator.py --check-auth --json
+```
+
+The diagnostic checks whether an API key is configured, whether the quota fetch
+succeeds, the selected primary quota bucket, and whether interval/weekly quota
+fields are present. It never prints the API key.
+
 ## How it works
 
 Uses the official MiniMax remains query endpoint:
 
 | Endpoint | Data |
 |---|---|
-| `/v1/token_plan/remains` | Interval & weekly remaining quotas and resets |
+| `/v1/api/openplatform/coding_plan/remains` | Interval and weekly remaining quotas and resets |
 
 Authentication is via `Authorization: Bearer <api-key>` header.
+
+Configuration is saved to `~/.config/minimax-usage-widget/config.json` with
+`0600` permissions.
 
 Panel indicator uses [Ayatana AppIndicator](https://github.com/AyatanaIndicators/libayatana-appindicator) (the GTK3 variant) via the `com.canonical.dbusmenu` protocol.
 
@@ -117,4 +141,3 @@ Panel indicator uses [Ayatana AppIndicator](https://github.com/AyatanaIndicators
 ## License
 
 MIT
-

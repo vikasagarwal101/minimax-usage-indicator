@@ -8,6 +8,8 @@ from gi.repository import AyatanaAppIndicator3 as AppIndicator, Gio, GLib, Gtk
 import threading
 import queue
 import os
+import argparse
+import json
 
 from .api import APIClient, APIAuthError, APIError
 from .config import fmt_count, fmt_reset, load_config, save_config
@@ -16,6 +18,7 @@ from .settings import SettingsWindow
 
 APP_ID = "com.minimax.usage-widget"
 INDICATOR_ID = "minimax-usage-indicator"
+CONSOLE_URL = "https://platform.minimax.io/subscribe/token-plan"
 
 
 class MiniMaxApp(Gtk.Application):
@@ -30,13 +33,15 @@ class MiniMaxApp(Gtk.Application):
         self._fetch_thread = None
         self._fetch_queue = queue.Queue()
         self._fetch_shutdown = False
+        self._last_error = ""
+        self._last_threshold_notice = ""
 
     def do_activate(self):
         self.hold()
 
         icon = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "blank-icon.svg",
+            "minimax-usage-indicator.svg",
         )
         self._indicator = AppIndicator.Indicator.new(
             INDICATOR_ID,
@@ -44,7 +49,7 @@ class MiniMaxApp(Gtk.Application):
             AppIndicator.IndicatorCategory.APPLICATION_STATUS,
         )
         self._indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-        self._indicator.set_label("MM --", "")
+        self._indicator.set_label("MMX --", "")
         self._indicator.set_title("MiniMax Quota")
         self._build_menu()
         self._indicator.set_menu(self._menu)
@@ -55,7 +60,7 @@ class MiniMaxApp(Gtk.Application):
             self._refresh()
             self._schedule_refresh()
         else:
-            self._indicator.set_label("MM ?", "")
+            self._indicator.set_label("MMX ?", "")
             self._set_status("No API key configured")
 
     # ── Menu ───────────────────────────────────────────────
@@ -89,7 +94,9 @@ class MiniMaxApp(Gtk.Application):
         mi.set_sensitive(False)
         self._menu.append(mi)
 
-        self._mi["wk_details"] = Gtk.MenuItem(label="  Remaining: -- / -- requests/tokens")
+        self._mi["wk_details"] = Gtk.MenuItem(
+            label="  Remaining: -- / -- requests/tokens"
+        )
         self._mi["wk_details"].set_sensitive(False)
         self._menu.append(self._mi["wk_details"])
 
@@ -114,7 +121,11 @@ class MiniMaxApp(Gtk.Application):
         mi.connect("activate", lambda _: self._refresh())
         self._menu.append(mi)
 
-        mi = Gtk.MenuItem(label="Settings\u2026")
+        mi = Gtk.MenuItem(label="Open MiniMax Console")
+        mi.connect("activate", self._on_open_console)
+        self._menu.append(mi)
+
+        mi = Gtk.MenuItem(label="Settings...")
         mi.connect("activate", self._on_settings)
         self._menu.append(mi)
 
@@ -146,7 +157,9 @@ class MiniMaxApp(Gtk.Application):
         else:
             int_label = "  Used: --"
         M["int_details"].set_label(int_label)
-        M["int_reset"].set_label(f"  \u21bb Resets in: {fmt_reset(d['interval_reset_ms'])}")
+        M["int_reset"].set_label(
+            f"  \u21bb Resets in: {fmt_reset(d['interval_reset_ms'])}"
+        )
 
         # Weekly
         if d["weekly_total"] > 0:
@@ -154,12 +167,16 @@ class MiniMaxApp(Gtk.Application):
                 f"  Used: {fmt_count(d['weekly_used'])} / "
                 f"{fmt_count(d['weekly_total'])} requests/tokens ({d['weekly_pct']}%)"
             )
-            M["wk_reset"].set_label(f"  \u21bb Resets in: {fmt_reset(d['weekly_reset_ms'])}")
+            M["wk_reset"].set_label(
+                f"  \u21bb Resets in: {fmt_reset(d['weekly_reset_ms'])}"
+            )
             M["wk_details"].show()
             M["wk_reset"].show()
         elif d.get("weekly_rem_pct") is not None:
             wk_label = f"  Used: {d['weekly_pct']}%"
-            M["wk_reset"].set_label(f"  \u21bb Resets in: {fmt_reset(d['weekly_reset_ms'])}")
+            M["wk_reset"].set_label(
+                f"  \u21bb Resets in: {fmt_reset(d['weekly_reset_ms'])}"
+            )
             M["wk_details"].show()
             M["wk_reset"].show()
         elif d.get("weekly_tracked"):
@@ -183,10 +200,14 @@ class MiniMaxApp(Gtk.Application):
     def _refresh(self):
         if not self._client:
             return
-        self._set_status("Refreshing\u2026")
+        self._set_status("Refreshing...")
         self._fetch_queue.put("refresh")
 
     def _start_fetch_worker(self):
+        if self._fetch_thread is not None and self._fetch_thread.is_alive():
+            return
+        self._fetch_shutdown = False
+
         def worker():
             while not self._fetch_shutdown:
                 try:
@@ -209,17 +230,27 @@ class MiniMaxApp(Gtk.Application):
 
     def _on_data(self, data):
         self._data = data
+        self._last_error = ""
         pct = data.get("interval_pct")
-        self._indicator.set_label(f"MM {pct}%" if pct is not None else "MM --", "")
+        self._indicator.set_label(_usage_label("MMX", pct), "")
+        self._maybe_notify_threshold("MMX", pct)
         self._update_menu(data)
         if self._win:
             self._win.update_data(data)
         return False
 
     def _on_error(self, msg):
-        self._indicator.set_label("MM ERR", "")
-        self._set_status(f"Error: {msg}")
+        self._indicator.set_label("MMX ERR", "")
+        if msg != self._last_error:
+            self._notify("MiniMax Quota Error", msg)
+        self._last_error = msg
+        self._set_status(self._error_status(msg))
         return False
+
+    def _error_status(self, msg):
+        if self._data and self._data.get("ts"):
+            return f"Error: {msg} (last OK {self._data['ts'].strftime('%H:%M:%S')})"
+        return f"Error: {msg}"
 
     def _schedule_refresh(self):
         if self._timer_id:
@@ -246,17 +277,36 @@ class MiniMaxApp(Gtk.Application):
     def _on_win_close(self, win):
         self._win = None
 
+    def _on_open_console(self, _):
+        Gtk.show_uri_on_window(None, CONSOLE_URL, Gtk.get_current_event_time())
+
+    def _maybe_notify_threshold(self, name, pct):
+        level = _threshold_level(pct)
+        if not level:
+            self._last_threshold_notice = ""
+            return
+        if level == self._last_threshold_notice:
+            return
+        self._last_threshold_notice = level
+        self._notify(f"{name} usage {level}", f"{_usage_label(name, pct)} used")
+
+    def _notify(self, title, body):
+        notification = Gio.Notification.new(title)
+        notification.set_body(body)
+        self.send_notification(title.lower().replace(" ", "-"), notification)
+
     def _on_settings(self, _):
         def on_save(cfg):
             self._config = cfg
             save_config(self._config)
             if self._config["api_key"]:
                 self._client = APIClient(self._config["api_key"])
+                self._start_fetch_worker()
                 self._refresh()
                 self._schedule_refresh()
             else:
                 self._client = None
-                self._indicator.set_label("MM ?", "")
+                self._indicator.set_label("MMX ?", "")
                 self._set_status("No API key configured")
 
         win = SettingsWindow(self, on_save)
@@ -267,10 +317,27 @@ class MiniMaxApp(Gtk.Application):
             GLib.source_remove(self._timer_id)
         self._fetch_shutdown = True
         self._fetch_queue.put("shutdown")
+        if self._fetch_thread:
+            self._fetch_thread.join(timeout=2)
         self.quit()
 
 
 def main():
+    parser = argparse.ArgumentParser(description="MiniMax quota indicator")
+    parser.add_argument(
+        "--check-auth",
+        action="store_true",
+        help="verify MiniMax API key and quota access without launching GTK",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit diagnostic output as JSON",
+    )
+    args = parser.parse_args()
+    if args.check_auth:
+        return check_auth(json_output=args.json)
+
     GLib.set_prgname(APP_ID)
     GLib.set_application_name("MiniMax Quota Indicator")
 
@@ -289,5 +356,67 @@ def main():
         Gtk.Window.set_default_icon_name(APP_ID)
 
     app = MiniMaxApp()
-    app.run()
+    return app.run()
 
+
+def check_auth(json_output=False):
+    cfg = load_config()
+    result = {
+        "app": "minimax",
+        "api_key_configured": bool(cfg.get("api_key")),
+        "console_url": CONSOLE_URL,
+    }
+    if not cfg.get("api_key"):
+        result.update({"fetch_ok": False, "error": "No API key configured"})
+        _print_check_result("MiniMax auth check", result, json_output)
+        return 1
+    try:
+        data = APIClient(cfg["api_key"]).fetch_all()
+    except APIError as e:
+        result.update({"fetch_ok": False, "error": str(e)})
+        _print_check_result("MiniMax auth check", result, json_output)
+        return 1
+    result.update(
+        {
+            "fetch_ok": True,
+            "plan": data.get("plan_label") or "",
+            "primary_bucket": data.get("model_name") or "",
+            "interval_pct_present": data.get("interval_pct") is not None,
+            "weekly_tracked": bool(data.get("weekly_tracked")),
+            "all_quota_buckets": len(data.get("all_models") or []),
+        }
+    )
+    _print_check_result("MiniMax auth check", result, json_output)
+    return 0
+
+
+def _usage_label(prefix, pct):
+    if pct is None:
+        return f"{prefix} --"
+    try:
+        value = float(pct)
+    except (TypeError, ValueError):
+        return f"{prefix} --"
+    marker = "!" if value >= 90 else "*" if value >= 80 else ""
+    return f"{prefix} {marker}{value:.0f}%"
+
+
+def _threshold_level(pct):
+    try:
+        value = float(pct)
+    except (TypeError, ValueError):
+        return ""
+    if value >= 90:
+        return "critical"
+    if value >= 80:
+        return "warning"
+    return ""
+
+
+def _print_check_result(title, result, json_output):
+    if json_output:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    print(title)
+    for key, value in result.items():
+        print(f"{key}: {value if value not in ('', None) else '--'}")
