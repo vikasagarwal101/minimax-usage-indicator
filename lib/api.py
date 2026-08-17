@@ -13,6 +13,14 @@ REMAINS_ENDPOINT = "/v1/api/openplatform/coding_plan/remains"
 # quota bucket (e.g. "general", "video"), not the subscription plan.
 PLAN_LABEL = "Token Plan"
 
+STANDARD_MINIMAX_MODELS = [
+    {"id": "MiniMax-M3", "display_name": "MiniMax-M3 (Flagship)"},
+    {"id": "MiniMax-M2.7", "display_name": "MiniMax-M2.7"},
+    {"id": "MiniMax-M2.7-highspeed", "display_name": "MiniMax-M2.7 HighSpeed"},
+    {"id": "MiniMax-M2.5", "display_name": "MiniMax-M2.5"},
+    {"id": "MiniMax-M2.5-highspeed", "display_name": "MiniMax-M2.5 HighSpeed"},
+]
+
 
 class APIError(Exception):
     pass
@@ -61,6 +69,27 @@ class APIClient:
             raise APIError("Network timeout contacting MiniMax API") from e
         except json.JSONDecodeError as e:
             raise APIError("Invalid response from API") from e
+
+    def _try_models(self):
+        try:
+            data = self._req("/v1/models")
+            raw_list = data.get("data") if isinstance(data, dict) else data
+            if isinstance(raw_list, list) and len(raw_list) > 0:
+                res = []
+                for m in raw_list:
+                    if isinstance(m, dict) and m.get("id"):
+                        m_id = str(m["id"])
+                        res.append(
+                            {
+                                "id": m_id,
+                                "display_name": m_id,
+                            }
+                        )
+                if res:
+                    return res
+        except Exception:
+            pass
+        return STANDARD_MINIMAX_MODELS
 
     @staticmethod
     def _rem_pct_from_model(m, kind):
@@ -146,9 +175,7 @@ class APIClient:
             raise APIError("No model remains data found in API response")
 
         # Primary model: prefer enabled "general" bucket, then any enabled
-        # model, then the first one. The old "MiniMax-M*" / "coding-plan"
-        # name match is obsolete — those are request-time model IDs, not
-        # values returned by /remains.
+        # model, then the first one.
         primary = None
         for m in models_list:
             if self._is_enabled(m) and m.get("model_name") == "general":
@@ -172,6 +199,8 @@ class APIClient:
             or self._rem_pct_from_model(m, "weekly") is not None
         ]
 
+        supported_models = self._try_models()
+
         return {
             "plan_label": PLAN_LABEL,
             "model_name": primary_data["name"],
@@ -193,5 +222,6 @@ class APIClient:
             "weekly_start": primary_data["weekly_start"],
             "weekly_end": primary_data["weekly_end"],
             "all_models": all_models,
+            "supported_models": supported_models,
             "ts": datetime.now(),
         }

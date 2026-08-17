@@ -376,6 +376,7 @@ def check_auth(json_output=False):
         result.update({"fetch_ok": False, "error": str(e)})
         _print_check_result("MiniMax auth check", result, json_output)
         return 1
+    supp_models = [m["id"] for m in data.get("supported_models", [])]
     result.update(
         {
             "fetch_ok": True,
@@ -384,6 +385,7 @@ def check_auth(json_output=False):
             "interval_pct_present": data.get("interval_pct") is not None,
             "weekly_tracked": bool(data.get("weekly_tracked")),
             "all_quota_buckets": len(data.get("all_models") or []),
+            "supported_models": ", ".join(supp_models) if supp_models else "--",
         }
     )
     _print_check_result("MiniMax auth check", result, json_output)
