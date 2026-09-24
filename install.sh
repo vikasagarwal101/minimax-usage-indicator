@@ -37,6 +37,11 @@ else
     echo "  ✓ All dependencies present"
 fi
 
+if ! /usr/bin/python3 -c 'import gi; gi.require_version("Gtk", "3.0"); gi.require_version("AyatanaAppIndicator3", "0.1"); from gi.repository import Gtk, AyatanaAppIndicator3'; then
+    echo "  System Python GTK bindings unavailable. Install dependencies: $DEPS" >&2
+    exit 1
+fi
+
 # ── Copy files ────────────────────────────────────────────────
 
 echo "[2/5] Installing application files..."
@@ -75,7 +80,7 @@ cat > "$APP_DIR/${APP_ID}.desktop" << EOF
 Type=Application
 Name=${APP_NAME}
 Comment=Panel indicator for MiniMax Token Plan quota usage
-Exec=python3 ${INSTALL_DIR}/minimax-usage-indicator.py
+Exec=/usr/bin/python3 ${INSTALL_DIR}/minimax-usage-indicator.py
 Icon=${APP_ID}
 Terminal=false
 Categories=Utility;System;
@@ -114,7 +119,7 @@ if [[ $LAUNCH_REPLY =~ ^[Yy]$ ]]; then
     # Kill any existing instances
     pkill -f minimax-usage-indicator.py 2>/dev/null || true
     sleep 1
-    setsid python3 "$INSTALL_DIR/minimax-usage-indicator.py" </dev/null >/dev/null 2>&1 &
+    setsid /usr/bin/python3 "$INSTALL_DIR/minimax-usage-indicator.py" </dev/null >/dev/null 2>&1 &
     echo "  ✓ Launched — look for the icon in your top panel bar"
 fi
 
